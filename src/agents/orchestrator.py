@@ -6,7 +6,6 @@ from langchain_openai import ChatOpenAI
 import mvk_sdk as mvk
 
 from ..utils.config import config
-from ..utils.mvk_tracker import tracker
 from ..prompts import INTENT_CLASSIFICATION_PROMPT, RESPONSE_SYNTHESIS_PROMPT
 from .sdk_agent import sdk_agent
 from .framework_router import framework_router
@@ -17,7 +16,16 @@ class ChatOrchestrator:
     """Main orchestrator that routes queries to specialist agents."""
 
     def __init__(self):
-        """Initialize Chat Orchestrator."""
+        """Initialize Chat Orchestrator and MVK SDK instrumentation."""
+        # Initialize MVK SDK once for entire application
+        mvk.instrument(
+            agent_id=config.MVK_AGENT_ID,
+            api_key=config.MVK_API_KEY,
+            enable_batching=True,
+            batch_size=10,
+            flush_interval_seconds=5
+        )
+
         self.llm = ChatOpenAI(
             model=config.LLM_MODEL,
             temperature=config.LLM_TEMPERATURE_INTENT,
@@ -36,39 +44,37 @@ class ChatOrchestrator:
         Returns:
             Dictionary with answer and metadata
         """
-        try:
-            # Stage 1: Intent classification
-            with mvk.context(name="stage.intent_classification"):
-                intent = self._classify_intent(query)
+        # Identify this agent
+        with mvk.context(agent_name="orchestrator"):
+            try:
+                # Stage 1: Intent classification
+                with mvk.context(name="stage.intent_classification"):
+                    intent = self._classify_intent(query)
 
-            # Stage 2: Agent routing
-            with mvk.context(name="stage.agent_routing"):
-                agent_responses = self._route_to_agents(query, intent)
+                # Stage 2: Agent routing
+                with mvk.context(name="stage.agent_routing"):
+                    agent_responses = self._route_to_agents(query, intent)
 
-            # Stage 3: Response synthesis
-            with mvk.context(name="stage.response_synthesis"):
-                final_response = self._synthesize_response(query, agent_responses, intent)
+                # Stage 3: Response synthesis
+                with mvk.context(name="stage.response_synthesis"):
+                    final_response = self._synthesize_response(query, agent_responses, intent)
 
-            # Track routing decisions
-            self._track_routing(intent)
+                return {
+                    "answer": final_response,
+                    "intent": intent,
+                    "agent_responses": agent_responses,
+                    "success": True
+                }
 
-            return {
-                "answer": final_response,
-                "intent": intent,
-                "agent_responses": agent_responses,
-                "success": True
-            }
+            except Exception as e:
+                print(f"❌ Orchestrator error: {e}")
 
-        except Exception as e:
-            print(f"❌ Orchestrator error: {e}")
-            tracker.track_metric("orchestrator.errors", 1, "error")
-
-            return {
-                "answer": f"❌ An error occurred: {str(e)}\n\nPlease try rephrasing your question.",
-                "intent": {},
-                "agent_responses": {},
-                "success": False
-            }
+                return {
+                    "answer": f"❌ An error occurred: {str(e)}\n\nPlease try rephrasing your question.",
+                    "intent": {},
+                    "agent_responses": {},
+                    "success": False
+                }
 
     def _classify_intent(self, query: str) -> Dict[str, any]:
         """
@@ -80,42 +86,37 @@ class ChatOrchestrator:
         Returns:
             Intent classification dictionary
         """
-        with mvk.create_signal(
-            name="tool.llm_classify_intent",
-            step_type="TOOL",
-            operation="classify"
-        ):
-            try:
-                prompt = INTENT_CLASSIFICATION_PROMPT.format(query=query)
+        try:
+            prompt = INTENT_CLASSIFICATION_PROMPT.format(query=query)
 
-                # LLM call is auto-tracked by MVK SDK
-                response = self.llm.invoke([
-                    {"role": "system", "content": "You are an intent classification expert."},
-                    {"role": "user", "content": prompt}
-                ])
+            # LLM call is auto-tracked by MVK SDK
+            response = self.llm.invoke([
+                {"role": "system", "content": "You are an intent classification expert."},
+                {"role": "user", "content": prompt}
+            ])
 
-                # Parse JSON response
-                intent_json = response.content.strip()
+            # Parse JSON response
+            intent_json = response.content.strip()
 
-                # Remove markdown code blocks if present
-                if "```json" in intent_json:
-                    intent_json = intent_json.split("```json")[1].split("```")[0].strip()
-                elif "```" in intent_json:
-                    intent_json = intent_json.split("```")[1].split("```")[0].strip()
+            # Remove markdown code blocks if present
+            if "```json" in intent_json:
+                intent_json = intent_json.split("```json")[1].split("```")[0].strip()
+            elif "```" in intent_json:
+                intent_json = intent_json.split("```")[1].split("```")[0].strip()
 
-                intent = json.loads(intent_json)
+            intent = json.loads(intent_json)
 
-                return intent
+            return intent
 
-            except Exception as e:
-                print(f"⚠️  Intent classification error: {e}, defaulting to SDK query")
-                # Default to SDK query if classification fails
-                return {
-                    "needs_sdk": True,
-                    "needs_framework": False,
-                    "needs_code": False,
-                    "framework_name": None
-                }
+        except Exception as e:
+            print(f"⚠️  Intent classification error: {e}, defaulting to SDK query")
+            # Default to SDK query if classification fails
+            return {
+                "needs_sdk": True,
+                "needs_framework": False,
+                "needs_code": False,
+                "framework_name": None
+            }
 
     def _route_to_agents(self, query: str, intent: Dict[str, any]) -> Dict[str, any]:
         """
@@ -248,17 +249,6 @@ class ChatOrchestrator:
             sources_text += "\n"
 
         return sources_text
-
-    def _track_routing(self, intent: Dict[str, any]):
-        """Track routing decisions for analytics."""
-        if intent.get("needs_sdk"):
-            tracker.track_metric("orchestrator.routed_to_sdk", 1, "route")
-
-        if intent.get("needs_framework"):
-            tracker.track_metric("orchestrator.routed_to_framework", 1, "route")
-
-        if intent.get("needs_code"):
-            tracker.track_metric("orchestrator.routed_to_code_gen", 1, "route")
 
 
 # Export singleton instance

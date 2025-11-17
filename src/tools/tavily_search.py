@@ -3,9 +3,9 @@
 from typing import List, Dict, Optional
 from tavily import TavilyClient
 import mvk_sdk as mvk
+from mvk_sdk import Metric
 
 from ..utils.config import config
-from ..utils.mvk_tracker import tracker
 
 
 class TavilySearch:
@@ -64,25 +64,25 @@ class TavilySearch:
                     })
 
                 # Track Tavily search cost
-                tracker.track_operation_with_cost(
-                    metric_name="tavily.searches",
-                    operation_key="tavily_search",
-                    quantity=1,
-                    unit="search",
-                    provider="tavily",
-                    additional_metadata={
-                        "max_results": max_results,
-                        "search_depth": search_depth,
-                        "results_returned": len(results),
-                        "domains": include_domains if include_domains else "all"
-                    }
+                mvk.add_metered_usage(
+                    Metric(
+                        name="tavily.search",
+                        value=1,
+                        unit="search",
+                        estimated_cost=config.TOOL_PRICES["tavily_search"],
+                        metadata={
+                            "max_results": max_results,
+                            "search_depth": search_depth,
+                            "results_returned": len(results),
+                            "domains": include_domains if include_domains else "all"
+                        }
+                    )
                 )
 
                 return results
 
             except Exception as e:
                 print(f"❌ Tavily search error: {e}")
-                tracker.track_metric("tavily.errors", 1, "error")
                 return []
 
     def search_framework(

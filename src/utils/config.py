@@ -51,6 +51,20 @@ class Config:
     LLM_TEMPERATURE_FRAMEWORK: float = 0.2
     LLM_TEMPERATURE_CODE: float = 0.3
 
+    # MVK SDK Tool Pricing (for custom cost tracking)
+    TOOL_PRICES = {
+        # Vector database operations
+        "chromadb_search": 0.0001,          # Per search operation
+        "chromadb_indexing": 0.0005,        # Per document indexed
+
+        # Web search operations
+        "tavily_search": 0.001,             # Per search request
+
+        # PDF processing operations
+        "pdf_ingestion": 0.002,             # Per page loaded
+        "pdf_parsing": 0.001,               # Per document parsed
+    }
+
     @classmethod
     def validate(cls) -> list[str]:
         """Validate required configuration and return list of errors."""

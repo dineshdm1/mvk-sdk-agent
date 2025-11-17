@@ -5,17 +5,16 @@ from langchain_openai import ChatOpenAI
 import mvk_sdk as mvk
 
 from ..utils.config import config
-from ..utils.mvk_tracker import tracker
 from ..tools.tavily_search import tavily_search
 from ..prompts import FRAMEWORK_SPECIALIST_PROMPT
 
 
 class FrameworkSpecialist:
-    """Specialist for a specific framework."""
+    """Specialist agent for specific AI framework."""
 
     def __init__(self, framework_name: str):
         """
-        Initialize framework specialist.
+        Initialize Framework Specialist.
 
         Args:
             framework_name: Name of the framework (langchain, llamaindex, etc.)
@@ -38,33 +37,30 @@ class FrameworkSpecialist:
         Returns:
             Dictionary with answer and sources
         """
-        try:
-            # Stage 1: Web search for framework documentation
-            with mvk.context(name="stage.web_search"):
-                # Perform Tavily search (tavily_search handles its own tracking)
-                search_results = tavily_search.search_framework(
-                    framework_name=self.framework_name,
-                    query=question,
-                    max_results=3
-                )
+        # Identify this agent with framework name
+        with mvk.context(agent_name=f"framework_specialist_{self.framework_name}"):
+            try:
+                # Stage 1: Web search for framework documentation
+                with mvk.context(name="stage.web_search"):
+                    # Perform Tavily search (tavily_search handles its own tracking)
+                    search_results = tavily_search.search_framework(
+                        framework_name=self.framework_name,
+                        query=question,
+                        max_results=3
+                    )
 
-            if not search_results:
-                return {
-                    "answer": f"⚠️ Couldn't find information about {self.framework_name}. Web search quota may be exceeded.",
-                    "sources": [],
-                    "success": False
-                }
+                if not search_results:
+                    return {
+                        "answer": f"⚠️ Couldn't find information about {self.framework_name}. Web search quota may be exceeded.",
+                        "sources": [],
+                        "success": False
+                    }
 
-            # Build context from search results
-            context = tavily_search.get_combined_context(search_results)
+                # Build context from search results
+                context = tavily_search.get_combined_context(search_results)
 
-            # Stage 2: Synthesize answer from search results
-            with mvk.context(name="stage.synthesis"):
-                with mvk.create_signal(
-                    name="tool.llm_synthesis",
-                    step_type="TOOL",
-                    operation="synthesize"
-                ):
+                # Stage 2: Synthesize answer from search results
+                with mvk.context(name="stage.synthesis"):
                     prompt = FRAMEWORK_SPECIALIST_PROMPT.format(
                         framework_name=self.framework_name.capitalize(),
                         search_results=context,
@@ -79,36 +75,32 @@ class FrameworkSpecialist:
 
                     answer = response.content
 
-            # Extract sources
-            sources = [
-                {
-                    "title": result["title"],
-                    "url": result["url"],
-                    "score": result.get("score", 0.0)
+                # Extract sources
+                sources = [
+                    {
+                        "title": result["title"],
+                        "url": result["url"],
+                        "score": result.get("score", 0.0)
+                    }
+                    for result in search_results
+                ]
+
+                return {
+                    "answer": answer,
+                    "sources": sources,
+                    "framework": self.framework_name,
+                    "success": True
                 }
-                for result in search_results
-            ]
 
-            # Track metrics
-            tracker.track_metric(f"framework_specialist.{self.framework_name}.queries", 1, "query")
+            except Exception as e:
+                print(f"❌ Framework Specialist ({self.framework_name}) error: {e}")
 
-            return {
-                "answer": answer,
-                "sources": sources,
-                "framework": self.framework_name,
-                "success": True
-            }
-
-        except Exception as e:
-            print(f"❌ Framework Specialist ({self.framework_name}) error: {e}")
-            tracker.track_metric(f"framework_specialist.{self.framework_name}.errors", 1, "error")
-
-            return {
-                "answer": f"❌ Error querying {self.framework_name} information: {str(e)}",
-                "sources": [],
-                "framework": self.framework_name,
-                "success": False
-            }
+                return {
+                    "answer": f"❌ Error querying {self.framework_name} information: {str(e)}",
+                    "sources": [],
+                    "framework": self.framework_name,
+                    "success": False
+                }
 
 
 class FrameworkRouter:
@@ -122,7 +114,7 @@ class FrameworkRouter:
             "crewai": FrameworkSpecialist("crewai"),
             "autogen": FrameworkSpecialist("autogen"),
             "haystack": FrameworkSpecialist("haystack"),
-            "generic": FrameworkSpecialist("generic")
+            "generic": FrameworkSpecialist("generic"),
         }
 
     def query(self, question: str, framework: Optional[str] = None) -> Dict[str, any]:
@@ -144,9 +136,6 @@ class FrameworkRouter:
 
         # Query specialist (already instrumented with @mvk.signal())
         result = specialist.query(question)
-
-        # Track routing
-        tracker.track_metric(f"framework_router.routed_to_{framework}", 1, "route")
 
         return result
 

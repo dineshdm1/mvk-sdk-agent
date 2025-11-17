@@ -5,15 +5,15 @@ from langchain.chains import RetrievalQA
 from langchain_openai import ChatOpenAI
 from langchain.schema import Document
 import mvk_sdk as mvk
+from mvk_sdk import Metric
 
 from ..utils.config import config
-from ..utils.mvk_tracker import tracker
 from ..tools.chromadb_manager import chromadb_manager
 from ..prompts import SDK_AGENT_PROMPT
 
 
 class SDKAgent:
-    """Agent for querying MVK SDK documentation."""
+    """Agent for querying MVK SDK documentation using RAG."""
 
     def __init__(self):
         """Initialize SDK Agent."""
@@ -36,55 +36,49 @@ class SDKAgent:
         Returns:
             Dictionary with answer and sources
         """
-        try:
-            # Check if ChromaDB is indexed
-            if not chromadb_manager.is_indexed():
-                return {
-                    "answer": "⚠️ Documentation not yet indexed. Please wait for indexing to complete.",
-                    "sources": [],
-                    "success": False
-                }
+        # Identify this agent
+        with mvk.context(agent_name="sdk_agent"):
+            try:
+                # Check if ChromaDB is indexed
+                if not chromadb_manager.is_indexed():
+                    return {
+                        "answer": "⚠️ Documentation not yet indexed. Please wait for indexing to complete.",
+                        "sources": [],
+                        "success": False
+                    }
 
-            # Stage 1: Vector retrieval
-            with mvk.context(name="stage.retrieval"):
-                with mvk.create_signal(
-                    name="tool.chromadb_search",
-                    step_type="TOOL",
-                    operation="similarity_search"
-                ):
+                # Stage 1: Vector retrieval
+                with mvk.context(name="stage.retrieval"):
+                    # ChromaDB search is auto-tracked by MVK SDK
                     docs = chromadb_manager.search(question, k=config.TOP_K_RESULTS)
 
-                    # Track ChromaDB search cost
-                    tracker.track_operation_with_cost(
-                        metric_name="chromadb.searches",
-                        operation_key="chromadb_search",
-                        quantity=1,
-                        unit="search",
-                        provider="chromadb",
-                        additional_metadata={
-                            "vectors_searched": chromadb_manager.get_document_count(),
-                            "results_returned": len(docs) if docs else 0,
-                            "top_k": config.TOP_K_RESULTS
-                        }
+                    # Track custom ChromaDB search cost
+                    mvk.add_metered_usage(
+                        Metric(
+                            name="chromadb.search",
+                            value=1,
+                            unit="search",
+                            estimated_cost=config.TOOL_PRICES["chromadb_search"],
+                            metadata={
+                                "vectors_searched": chromadb_manager.get_document_count(),
+                                "results_returned": len(docs) if docs else 0,
+                                "top_k": config.TOP_K_RESULTS
+                            }
+                        )
                     )
 
-            if not docs:
-                return {
-                    "answer": "I couldn't find relevant information in the MVK SDK documentation for this question.",
-                    "sources": [],
-                    "success": False
-                }
+                if not docs:
+                    return {
+                        "answer": "I couldn't find relevant information in the MVK SDK documentation for this question.",
+                        "sources": [],
+                        "success": False
+                    }
 
-            # Build context from retrieved documents
-            context = self._build_context(docs)
+                # Build context from retrieved documents
+                context = self._build_context(docs)
 
-            # Stage 2: Answer synthesis
-            with mvk.context(name="stage.synthesis"):
-                with mvk.create_signal(
-                    name="tool.llm_synthesis",
-                    step_type="TOOL",
-                    operation="synthesize"
-                ):
+                # Stage 2: Answer synthesis
+                with mvk.context(name="stage.synthesis"):
                     prompt = SDK_AGENT_PROMPT.format(
                         context=context,
                         question=question
@@ -98,27 +92,23 @@ class SDKAgent:
 
                     answer = response.content
 
-            # Extract sources
-            sources = self._extract_sources(docs)
+                # Extract sources
+                sources = self._extract_sources(docs)
 
-            # Track metrics
-            tracker.track_metric("sdk_agent.queries", 1, "query")
+                return {
+                    "answer": answer,
+                    "sources": sources,
+                    "success": True
+                }
 
-            return {
-                "answer": answer,
-                "sources": sources,
-                "success": True
-            }
+            except Exception as e:
+                print(f"❌ SDK Agent error: {e}")
 
-        except Exception as e:
-            print(f"❌ SDK Agent error: {e}")
-            tracker.track_metric("sdk_agent.errors", 1, "error")
-
-            return {
-                "answer": f"❌ Error querying SDK documentation: {str(e)}",
-                "sources": [],
-                "success": False
-            }
+                return {
+                    "answer": f"❌ Error querying SDK documentation: {str(e)}",
+                    "sources": [],
+                    "success": False
+                }
 
     def _build_context(self, docs: List[Document]) -> str:
         """Build context string from retrieved documents."""
@@ -131,13 +121,12 @@ class SDKAgent:
         return context
 
     def _extract_sources(self, docs: List[Document]) -> List[Dict[str, any]]:
-        """Extract source metadata from documents."""
+        """Extract source information from documents."""
         sources = []
         for doc in docs:
             sources.append({
-                "page": doc.metadata.get("page", "?"),
-                "source": doc.metadata.get("source", "mvk_sdk_documentation.pdf"),
-                "content_preview": doc.page_content[:150] + "..."
+                "page": doc.metadata.get("page", "Unknown"),
+                "source": doc.metadata.get("source", "mvk_sdk_documentation.pdf")
             })
 
         return sources

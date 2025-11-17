@@ -3,10 +3,10 @@
 import chainlit as cl
 from chainlit.input_widget import TextInput
 import time
+import mvk_sdk as mvk
 
 from utils.config import config
 from utils.session_manager import session_manager
-from utils.mvk_tracker import tracker
 from agents.orchestrator import chat_orchestrator
 from prompts import (
     WELCOME_MESSAGE,
@@ -132,26 +132,27 @@ async def handle_query(query: str):
     session_id = cl.user_session.get("session_id")
 
     # Create conversation ID for this query
-    conversation_id = tracker.create_conversation_id()
+    conversation_id = f"conv-{int(time.time() * 1000)}"
 
     # Show loading message
     loading_msg = await cl.Message(content="🔍 Processing your query...").send()
 
     try:
-        # Track query with MVK
+        # Track query with MVK SDK context
         start_time = time.time()
 
-        with tracker.track_query(
+        # Set top-level business context for entire request
+        with mvk.context(
             user_id=username,
             session_id=session_id,
-            conversation_id=conversation_id
+            tenant_id=config.MVK_TENANT_ID
         ):
-            # Process query through orchestrator
-            result = chat_orchestrator.process_query(query)
+            with mvk.context(conversation_id=conversation_id):
+                # Process query through orchestrator
+                result = chat_orchestrator.process_query(query)
 
         # Calculate latency
         latency_ms = (time.time() - start_time) * 1000
-        tracker.track_latency("query_processing", latency_ms)
 
         # Update loading message with result
         await loading_msg.update(content=result["answer"])
@@ -181,8 +182,6 @@ async def handle_query(query: str):
     except Exception as e:
         error_msg = ERROR_GENERAL.format(error=str(e))
         await loading_msg.update(content=error_msg)
-
-        tracker.track_metric("query.errors", 1, "error")
 
 
 @cl.action_callback("feedback_helpful")

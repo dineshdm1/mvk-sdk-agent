@@ -6,9 +6,9 @@ from langchain.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 import mvk_sdk as mvk
+from mvk_sdk import Metric
 
 from ..utils.config import config
-from ..utils.mvk_tracker import tracker
 
 
 class PDFIngestor:
@@ -62,16 +62,17 @@ class PDFIngestor:
             print(f"✅ Loaded {len(documents)} pages")
 
             # Track PDF loading cost
-            tracker.track_operation_with_cost(
-                metric_name="pdf.pages_loaded",
-                operation_key="pdf_ingestion",
-                quantity=len(documents),
-                unit="page",
-                provider="internal",
-                additional_metadata={
-                    "file_path": self.pdf_path,
-                    "pages_loaded": len(documents)
-                }
+            mvk.add_metered_usage(
+                Metric(
+                    name="pdf.pages_loaded",
+                    value=len(documents),
+                    unit="page",
+                    estimated_cost=config.TOOL_PRICES["pdf_ingestion"] * len(documents),
+                    metadata={
+                        "file_path": self.pdf_path,
+                        "pages_loaded": len(documents)
+                    }
+                )
             )
 
         # Stage 2: Split into chunks
@@ -85,17 +86,18 @@ class PDFIngestor:
             print(f"✅ Created {len(chunks)} chunks")
 
             # Track PDF parsing cost
-            tracker.track_operation_with_cost(
-                metric_name="pdf.chunks_created",
-                operation_key="pdf_parsing",
-                quantity=len(chunks),
-                unit="chunk",
-                provider="internal",
-                additional_metadata={
-                    "chunk_size": self.chunk_size,
-                    "chunk_overlap": self.chunk_overlap,
-                    "total_chunks": len(chunks)
-                }
+            mvk.add_metered_usage(
+                Metric(
+                    name="pdf.chunks_created",
+                    value=len(chunks),
+                    unit="chunk",
+                    estimated_cost=config.TOOL_PRICES["pdf_parsing"],
+                    metadata={
+                        "chunk_size": self.chunk_size,
+                        "chunk_overlap": self.chunk_overlap,
+                        "total_chunks": len(chunks)
+                    }
+                )
             )
 
         # Add metadata to chunks

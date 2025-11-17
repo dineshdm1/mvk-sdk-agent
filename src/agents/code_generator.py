@@ -5,7 +5,6 @@ from langchain_openai import ChatOpenAI
 import mvk_sdk as mvk
 
 from ..utils.config import config
-from ..utils.mvk_tracker import tracker
 from ..prompts import CODE_GENERATOR_PROMPT
 
 
@@ -38,18 +37,15 @@ class CodeGenerator:
         Returns:
             Dictionary with code, explanation, cost estimate, and gotchas
         """
-        try:
-            # Build comprehensive context
-            sdk_ctx = sdk_context or "No specific SDK context provided."
-            framework_ctx = framework_context or "No specific framework context provided."
+        # Identify this agent
+        with mvk.context(agent_name="code_generator"):
+            try:
+                # Build comprehensive context
+                sdk_ctx = sdk_context or "No specific SDK context provided."
+                framework_ctx = framework_context or "No specific framework context provided."
 
-            # Stage 1: Code generation
-            with mvk.context(name="stage.generation"):
-                with mvk.create_signal(
-                    name="tool.llm_code_gen",
-                    step_type="TOOL",
-                    operation="generate"
-                ):
+                # Stage 1: Code generation
+                with mvk.context(name="stage.generation"):
                     prompt = CODE_GENERATOR_PROMPT.format(
                         user_query=user_query,
                         sdk_context=sdk_ctx,
@@ -64,29 +60,25 @@ class CodeGenerator:
 
                     raw_response = response.content
 
-            # Stage 2: Response parsing
-            with mvk.context(name="stage.parsing"):
-                parsed = self._parse_response(raw_response)
+                # Stage 2: Response parsing
+                with mvk.context(name="stage.parsing"):
+                    parsed = self._parse_response(raw_response)
 
-            # Track metrics
-            tracker.track_metric("code_generator.generations", 1, "generation")
+                return {
+                    **parsed,
+                    "success": True
+                }
 
-            return {
-                **parsed,
-                "success": True
-            }
+            except Exception as e:
+                print(f"❌ Code Generator error: {e}")
 
-        except Exception as e:
-            print(f"❌ Code Generator error: {e}")
-            tracker.track_metric("code_generator.errors", 1, "error")
-
-            return {
-                "code": f"# Error generating code: {str(e)}",
-                "explanation": "",
-                "cost_estimate": "",
-                "gotchas": "",
-                "success": False
-            }
+                return {
+                    "code": f"# Error generating code: {str(e)}",
+                    "explanation": "",
+                    "cost_estimate": "",
+                    "gotchas": "",
+                    "success": False
+                }
 
     def _parse_response(self, response: str) -> Dict[str, str]:
         """
@@ -98,63 +90,53 @@ class CodeGenerator:
         Returns:
             Dictionary with parsed components
         """
-        code = self._extract_code_block(response)
-        explanation = self._extract_section(response, "Explanation")
-        cost_estimate = self._extract_section(response, "Estimated Cost")
-        gotchas = self._extract_section(response, "Gotchas")
-
-        return {
-            "code": code,
-            "explanation": explanation,
-            "cost_estimate": cost_estimate,
-            "gotchas": gotchas
+        # Initialize result
+        result = {
+            "code": "",
+            "explanation": "",
+            "cost_estimate": "",
+            "gotchas": ""
         }
 
-    def _extract_code_block(self, text: str) -> str:
-        """Extract code from markdown code block."""
-        # Find ```python or ``` code blocks
-        if "```python" in text:
-            parts = text.split("```python")
+        # Extract code blocks
+        if "```python" in response:
+            parts = response.split("```python")
             if len(parts) > 1:
-                code = parts[1].split("```")[0].strip()
-                return code
-        elif "```" in text:
-            parts = text.split("```")
-            if len(parts) > 2:
-                code = parts[1].strip()
-                # Remove language identifier if present
-                lines = code.split("\n")
-                if lines and lines[0].strip().lower() in ["python", "py"]:
-                    code = "\n".join(lines[1:])
-                return code
+                code_part = parts[1].split("```")[0]
+                result["code"] = code_part.strip()
 
-        return text.strip()
+        # Extract explanation
+        if "**Explanation:**" in response or "Explanation:" in response:
+            explanation_marker = "**Explanation:**" if "**Explanation:**" in response else "Explanation:"
+            parts = response.split(explanation_marker)
+            if len(parts) > 1:
+                explanation_text = parts[1].split("**")[0] if "**" in parts[1] else parts[1]
+                result["explanation"] = explanation_text.strip()
 
-    def _extract_section(self, text: str, section_name: str) -> str:
-        """Extract a specific section from the response."""
-        # Try to find section with **SectionName:** or **SectionName**:
-        markers = [
-            f"**{section_name}:**",
-            f"**{section_name}**:",
-            f"{section_name}:",
-        ]
+        # Extract cost estimate
+        if "**Estimated Cost:**" in response or "Estimated Cost:" in response or "**Cost Estimate:**" in response:
+            cost_marker = "**Estimated Cost:**" if "**Estimated Cost:**" in response else \
+                         "**Cost Estimate:**" if "**Cost Estimate:**" in response else "Estimated Cost:"
+            parts = response.split(cost_marker)
+            if len(parts) > 1:
+                cost_text = parts[1].split("**")[0] if "**" in parts[1] else parts[1]
+                result["cost_estimate"] = cost_text.strip()
 
-        for marker in markers:
-            if marker in text:
-                parts = text.split(marker)
-                if len(parts) > 1:
-                    # Get text until next section or end
-                    section_text = parts[1]
+        # Extract gotchas
+        if "**Gotchas:**" in response or "Gotchas:" in response:
+            gotchas_marker = "**Gotchas:**" if "**Gotchas:**" in response else "Gotchas:"
+            parts = response.split(gotchas_marker)
+            if len(parts) > 1:
+                gotchas_text = parts[1].split("**")[0] if "**" in parts[1] else parts[1]
+                result["gotchas"] = gotchas_text.strip()
 
-                    # Stop at next markdown header or section
-                    for stop_marker in ["**Explanation", "**Estimated Cost", "**Gotchas", "**", "\n\n##"]:
-                        if stop_marker in section_text and stop_marker != marker:
-                            section_text = section_text.split(stop_marker)[0]
-                            break
+        # If code wasn't extracted, use the whole response
+        if not result["code"] and "```" in response:
+            parts = response.split("```")
+            if len(parts) > 1:
+                result["code"] = parts[1].strip()
 
-                    return section_text.strip()
-
-        return ""
+        return result
 
     def get_stats(self) -> Dict[str, any]:
         """Get Code Generator statistics."""
