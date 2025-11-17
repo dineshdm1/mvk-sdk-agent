@@ -5,6 +5,7 @@ from typing import List, Optional
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain.schema import Document
+import mvk_sdk as mvk
 
 from ..utils.config import config
 from ..utils.mvk_tracker import tracker
@@ -74,7 +75,11 @@ class ChromaDBManager:
 
         print(f"🔄 Indexing {len(documents)} documents into ChromaDB...")
 
-        with tracker.track_tool("chromadb_indexing", "index"):
+        with mvk.create_signal(
+            name="tool.chromadb_indexing",
+            step_type="TOOL",
+            operation="index"
+        ):
             # Create embeddings and store
             self._vectorstore = Chroma.from_documents(
                 documents=documents,
@@ -86,10 +91,22 @@ class ChromaDBManager:
             # Persist to disk
             self._vectorstore.persist()
 
-        count = self._vectorstore._collection.count()
-        print(f"✅ Indexed {count} documents in ChromaDB")
+            count = self._vectorstore._collection.count()
 
-        tracker.track_metric("chromadb.documents_indexed", count, "document")
+            # Track ChromaDB indexing cost
+            tracker.track_operation_with_cost(
+                metric_name="chromadb.documents_indexed",
+                operation_key="chromadb_indexing",
+                quantity=len(documents),
+                unit="document",
+                provider="chromadb",
+                additional_metadata={
+                    "total_documents": count,
+                    "batch_size": len(documents)
+                }
+            )
+
+        print(f"✅ Indexed {count} documents in ChromaDB")
 
     def search(self, query: str, k: int = None) -> List[Document]:
         """
@@ -104,10 +121,8 @@ class ChromaDBManager:
         """
         k = k or config.TOP_K_RESULTS
 
-        with tracker.track_tool("chromadb_search", "search"):
-            results = self.vectorstore.similarity_search(query, k=k)
-
-        tracker.track_metric("chromadb.searches", 1, "search")
+        # Perform search (tracking is done by caller in sdk_agent.py)
+        results = self.vectorstore.similarity_search(query, k=k)
 
         return results
 
@@ -124,8 +139,8 @@ class ChromaDBManager:
         """
         k = k or config.TOP_K_RESULTS
 
-        with tracker.track_tool("chromadb_search", "search_with_score"):
-            results = self.vectorstore.similarity_search_with_score(query, k=k)
+        # Perform search with score (tracking is done by caller if needed)
+        results = self.vectorstore.similarity_search_with_score(query, k=k)
 
         return results
 

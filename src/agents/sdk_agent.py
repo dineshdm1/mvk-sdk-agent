@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 from langchain.chains import RetrievalQA
 from langchain_openai import ChatOpenAI
 from langchain.schema import Document
+import mvk_sdk as mvk
 
 from ..utils.config import config
 from ..utils.mvk_tracker import tracker
@@ -24,6 +25,7 @@ class SDKAgent:
 
         self.vectorstore = chromadb_manager.vectorstore
 
+    @mvk.signal(step_type="AGENT", operation="rag_search")
     def query(self, question: str) -> Dict[str, any]:
         """
         Query MVK SDK documentation.
@@ -34,37 +36,61 @@ class SDKAgent:
         Returns:
             Dictionary with answer and sources
         """
-        with tracker.track_agent("sdk_agent", "rag_query"):
-            try:
-                # Check if ChromaDB is indexed
-                if not chromadb_manager.is_indexed():
-                    return {
-                        "answer": "⚠️ Documentation not yet indexed. Please wait for indexing to complete.",
-                        "sources": [],
-                        "success": False
-                    }
+        try:
+            # Check if ChromaDB is indexed
+            if not chromadb_manager.is_indexed():
+                return {
+                    "answer": "⚠️ Documentation not yet indexed. Please wait for indexing to complete.",
+                    "sources": [],
+                    "success": False
+                }
 
-                # Retrieve relevant documents
-                with tracker.track_tool("chromadb_search", "similarity_search"):
+            # Stage 1: Vector retrieval
+            with mvk.context(name="stage.retrieval"):
+                with mvk.create_signal(
+                    name="tool.chromadb_search",
+                    step_type="TOOL",
+                    operation="similarity_search"
+                ):
                     docs = chromadb_manager.search(question, k=config.TOP_K_RESULTS)
 
-                if not docs:
-                    return {
-                        "answer": "I couldn't find relevant information in the MVK SDK documentation for this question.",
-                        "sources": [],
-                        "success": False
-                    }
+                    # Track ChromaDB search cost
+                    tracker.track_operation_with_cost(
+                        metric_name="chromadb.searches",
+                        operation_key="chromadb_search",
+                        quantity=1,
+                        unit="search",
+                        provider="chromadb",
+                        additional_metadata={
+                            "vectors_searched": chromadb_manager.get_document_count(),
+                            "results_returned": len(docs) if docs else 0,
+                            "top_k": config.TOP_K_RESULTS
+                        }
+                    )
 
-                # Build context from retrieved documents
-                context = self._build_context(docs)
+            if not docs:
+                return {
+                    "answer": "I couldn't find relevant information in the MVK SDK documentation for this question.",
+                    "sources": [],
+                    "success": False
+                }
 
-                # Generate answer using LLM
-                with tracker.track_tool("llm_generation", "generate_answer"):
+            # Build context from retrieved documents
+            context = self._build_context(docs)
+
+            # Stage 2: Answer synthesis
+            with mvk.context(name="stage.synthesis"):
+                with mvk.create_signal(
+                    name="tool.llm_synthesis",
+                    step_type="TOOL",
+                    operation="synthesize"
+                ):
                     prompt = SDK_AGENT_PROMPT.format(
                         context=context,
                         question=question
                     )
 
+                    # LLM call is auto-tracked by MVK SDK
                     response = self.llm.invoke([
                         {"role": "system", "content": "You are an MVK SDK expert assistant."},
                         {"role": "user", "content": prompt}
@@ -72,27 +98,27 @@ class SDKAgent:
 
                     answer = response.content
 
-                # Extract sources
-                sources = self._extract_sources(docs)
+            # Extract sources
+            sources = self._extract_sources(docs)
 
-                # Track metrics
-                tracker.track_metric("sdk_agent.queries", 1, "query")
+            # Track metrics
+            tracker.track_metric("sdk_agent.queries", 1, "query")
 
-                return {
-                    "answer": answer,
-                    "sources": sources,
-                    "success": True
-                }
+            return {
+                "answer": answer,
+                "sources": sources,
+                "success": True
+            }
 
-            except Exception as e:
-                print(f"❌ SDK Agent error: {e}")
-                tracker.track_metric("sdk_agent.errors", 1, "error")
+        except Exception as e:
+            print(f"❌ SDK Agent error: {e}")
+            tracker.track_metric("sdk_agent.errors", 1, "error")
 
-                return {
-                    "answer": f"❌ Error querying SDK documentation: {str(e)}",
-                    "sources": [],
-                    "success": False
-                }
+            return {
+                "answer": f"❌ Error querying SDK documentation: {str(e)}",
+                "sources": [],
+                "success": False
+            }
 
     def _build_context(self, docs: List[Document]) -> str:
         """Build context string from retrieved documents."""

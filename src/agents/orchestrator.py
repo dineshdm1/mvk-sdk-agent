@@ -3,6 +3,7 @@
 import json
 from typing import Dict, Optional
 from langchain_openai import ChatOpenAI
+import mvk_sdk as mvk
 
 from ..utils.config import config
 from ..utils.mvk_tracker import tracker
@@ -23,6 +24,7 @@ class ChatOrchestrator:
             openai_api_key=config.OPENAI_API_KEY
         )
 
+    @mvk.signal(step_type="AGENT", operation="orchestrate")
     def process_query(self, query: str, conversation_history: Optional[str] = None) -> Dict[str, any]:
         """
         Process user query by routing to appropriate agents.
@@ -34,37 +36,39 @@ class ChatOrchestrator:
         Returns:
             Dictionary with answer and metadata
         """
-        with tracker.track_agent("orchestrator", "process_query"):
-            try:
-                # Step 1: Classify intent
+        try:
+            # Stage 1: Intent classification
+            with mvk.context(name="stage.intent_classification"):
                 intent = self._classify_intent(query)
 
-                # Step 2: Route to appropriate agents
+            # Stage 2: Agent routing
+            with mvk.context(name="stage.agent_routing"):
                 agent_responses = self._route_to_agents(query, intent)
 
-                # Step 3: Synthesize final response
+            # Stage 3: Response synthesis
+            with mvk.context(name="stage.response_synthesis"):
                 final_response = self._synthesize_response(query, agent_responses, intent)
 
-                # Track routing decisions
-                self._track_routing(intent)
+            # Track routing decisions
+            self._track_routing(intent)
 
-                return {
-                    "answer": final_response,
-                    "intent": intent,
-                    "agent_responses": agent_responses,
-                    "success": True
-                }
+            return {
+                "answer": final_response,
+                "intent": intent,
+                "agent_responses": agent_responses,
+                "success": True
+            }
 
-            except Exception as e:
-                print(f"❌ Orchestrator error: {e}")
-                tracker.track_metric("orchestrator.errors", 1, "error")
+        except Exception as e:
+            print(f"❌ Orchestrator error: {e}")
+            tracker.track_metric("orchestrator.errors", 1, "error")
 
-                return {
-                    "answer": f"❌ An error occurred: {str(e)}\n\nPlease try rephrasing your question.",
-                    "intent": {},
-                    "agent_responses": {},
-                    "success": False
-                }
+            return {
+                "answer": f"❌ An error occurred: {str(e)}\n\nPlease try rephrasing your question.",
+                "intent": {},
+                "agent_responses": {},
+                "success": False
+            }
 
     def _classify_intent(self, query: str) -> Dict[str, any]:
         """
@@ -76,10 +80,15 @@ class ChatOrchestrator:
         Returns:
             Intent classification dictionary
         """
-        with tracker.track_tool("intent_classification", "classify"):
+        with mvk.create_signal(
+            name="tool.llm_classify_intent",
+            step_type="TOOL",
+            operation="classify"
+        ):
             try:
                 prompt = INTENT_CLASSIFICATION_PROMPT.format(query=query)
 
+                # LLM call is auto-tracked by MVK SDK
                 response = self.llm.invoke([
                     {"role": "system", "content": "You are an intent classification expert."},
                     {"role": "user", "content": prompt}
@@ -123,16 +132,16 @@ class ChatOrchestrator:
 
         # Query SDK Agent if needed
         if intent.get("needs_sdk", False):
-            with tracker.track_tool("agent_routing", "sdk_agent"):
-                sdk_response = sdk_agent.query(query)
-                responses["sdk"] = sdk_response
+            # Agent is already instrumented with @mvk.signal()
+            sdk_response = sdk_agent.query(query)
+            responses["sdk"] = sdk_response
 
         # Query Framework Specialist if needed
         if intent.get("needs_framework", False):
             framework_name = intent.get("framework_name")
-            with tracker.track_tool("agent_routing", f"framework_{framework_name}"):
-                framework_response = framework_router.query(query, framework_name)
-                responses["framework"] = framework_response
+            # Agent is already instrumented with @mvk.signal()
+            framework_response = framework_router.query(query, framework_name)
+            responses["framework"] = framework_response
 
         # Query Code Generator if needed
         if intent.get("needs_code", False):
@@ -140,13 +149,13 @@ class ChatOrchestrator:
             sdk_context = responses.get("sdk", {}).get("answer", "")
             framework_context = responses.get("framework", {}).get("answer", "")
 
-            with tracker.track_tool("agent_routing", "code_generator"):
-                code_response = code_generator.generate(
-                    user_query=query,
-                    sdk_context=sdk_context if sdk_context else None,
-                    framework_context=framework_context if framework_context else None
-                )
-                responses["code"] = code_response
+            # Agent is already instrumented with @mvk.signal()
+            code_response = code_generator.generate(
+                user_query=query,
+                sdk_context=sdk_context if sdk_context else None,
+                framework_context=framework_context if framework_context else None
+            )
+            responses["code"] = code_response
 
         return responses
 

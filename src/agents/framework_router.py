@@ -2,6 +2,7 @@
 
 from typing import Dict, Optional
 from langchain_openai import ChatOpenAI
+import mvk_sdk as mvk
 
 from ..utils.config import config
 from ..utils.mvk_tracker import tracker
@@ -26,6 +27,7 @@ class FrameworkSpecialist:
             openai_api_key=config.OPENAI_API_KEY
         )
 
+    @mvk.signal(step_type="AGENT", operation="framework_search")
     def query(self, question: str) -> Dict[str, any]:
         """
         Query framework-specific information.
@@ -36,36 +38,40 @@ class FrameworkSpecialist:
         Returns:
             Dictionary with answer and sources
         """
-        agent_name = f"framework_specialist.{self.framework_name}"
+        try:
+            # Stage 1: Web search for framework documentation
+            with mvk.context(name="stage.web_search"):
+                # Perform Tavily search (tavily_search handles its own tracking)
+                search_results = tavily_search.search_framework(
+                    framework_name=self.framework_name,
+                    query=question,
+                    max_results=3
+                )
 
-        with tracker.track_agent(agent_name, "web_search_query"):
-            try:
-                # Perform Tavily search
-                with tracker.track_tool("tavily_search", f"search_{self.framework_name}"):
-                    search_results = tavily_search.search_framework(
-                        framework_name=self.framework_name,
-                        query=question,
-                        max_results=3
-                    )
+            if not search_results:
+                return {
+                    "answer": f"⚠️ Couldn't find information about {self.framework_name}. Web search quota may be exceeded.",
+                    "sources": [],
+                    "success": False
+                }
 
-                if not search_results:
-                    return {
-                        "answer": f"⚠️ Couldn't find information about {self.framework_name}. Web search quota may be exceeded.",
-                        "sources": [],
-                        "success": False
-                    }
+            # Build context from search results
+            context = tavily_search.get_combined_context(search_results)
 
-                # Build context from search results
-                context = tavily_search.get_combined_context(search_results)
-
-                # Generate answer using LLM
-                with tracker.track_tool("llm_synthesis", f"synthesize_{self.framework_name}"):
+            # Stage 2: Synthesize answer from search results
+            with mvk.context(name="stage.synthesis"):
+                with mvk.create_signal(
+                    name="tool.llm_synthesis",
+                    step_type="TOOL",
+                    operation="synthesize"
+                ):
                     prompt = FRAMEWORK_SPECIALIST_PROMPT.format(
                         framework_name=self.framework_name.capitalize(),
                         search_results=context,
                         question=question
                     )
 
+                    # LLM call is auto-tracked by MVK SDK
                     response = self.llm.invoke([
                         {"role": "system", "content": f"You are a {self.framework_name} expert."},
                         {"role": "user", "content": prompt}
@@ -73,36 +79,36 @@ class FrameworkSpecialist:
 
                     answer = response.content
 
-                # Extract sources
-                sources = [
-                    {
-                        "title": result["title"],
-                        "url": result["url"],
-                        "score": result.get("score", 0.0)
-                    }
-                    for result in search_results
-                ]
-
-                # Track metrics
-                tracker.track_metric(f"framework_specialist.{self.framework_name}.queries", 1, "query")
-
-                return {
-                    "answer": answer,
-                    "sources": sources,
-                    "framework": self.framework_name,
-                    "success": True
+            # Extract sources
+            sources = [
+                {
+                    "title": result["title"],
+                    "url": result["url"],
+                    "score": result.get("score", 0.0)
                 }
+                for result in search_results
+            ]
 
-            except Exception as e:
-                print(f"❌ Framework Specialist ({self.framework_name}) error: {e}")
-                tracker.track_metric(f"framework_specialist.{self.framework_name}.errors", 1, "error")
+            # Track metrics
+            tracker.track_metric(f"framework_specialist.{self.framework_name}.queries", 1, "query")
 
-                return {
-                    "answer": f"❌ Error querying {self.framework_name} information: {str(e)}",
-                    "sources": [],
-                    "framework": self.framework_name,
-                    "success": False
-                }
+            return {
+                "answer": answer,
+                "sources": sources,
+                "framework": self.framework_name,
+                "success": True
+            }
+
+        except Exception as e:
+            print(f"❌ Framework Specialist ({self.framework_name}) error: {e}")
+            tracker.track_metric(f"framework_specialist.{self.framework_name}.errors", 1, "error")
+
+            return {
+                "answer": f"❌ Error querying {self.framework_name} information: {str(e)}",
+                "sources": [],
+                "framework": self.framework_name,
+                "success": False
+            }
 
 
 class FrameworkRouter:
@@ -130,20 +136,19 @@ class FrameworkRouter:
         Returns:
             Dictionary with answer and sources
         """
-        with tracker.track_agent("framework_router", "route_query"):
-            # Normalize framework name
-            framework = (framework or "generic").lower()
+        # Normalize framework name
+        framework = (framework or "generic").lower()
 
-            # Get specialist (fallback to generic)
-            specialist = self.specialists.get(framework, self.specialists["generic"])
+        # Get specialist (fallback to generic)
+        specialist = self.specialists.get(framework, self.specialists["generic"])
 
-            # Query specialist
-            result = specialist.query(question)
+        # Query specialist (already instrumented with @mvk.signal())
+        result = specialist.query(question)
 
-            # Track routing
-            tracker.track_metric(f"framework_router.routed_to_{framework}", 1, "route")
+        # Track routing
+        tracker.track_metric(f"framework_router.routed_to_{framework}", 1, "route")
 
-            return result
+        return result
 
     def get_supported_frameworks(self) -> list[str]:
         """Get list of supported frameworks."""

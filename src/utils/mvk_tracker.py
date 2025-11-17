@@ -9,6 +9,26 @@ from mvk_sdk import Metric
 from .config import config
 
 
+# Tool pricing configuration (per operation)
+TOOL_PRICES = {
+    # ChromaDB operations
+    "chromadb_indexing": 0.0005,  # Per document batch
+    "chromadb_search": 0.0001,     # Per search query
+
+    # Tavily search
+    "tavily_search": 0.001,        # Per search request
+
+    # PDF processing
+    "pdf_ingestion": 0.002,        # Per page processed
+    "pdf_parsing": 0.001,          # Per document
+
+    # LLM operations (for reference, auto-tracked)
+    "llm_classification": None,    # Auto-tracked by MVK SDK
+    "llm_synthesis": None,         # Auto-tracked by MVK SDK
+    "llm_generation": None,        # Auto-tracked by MVK SDK
+}
+
+
 class MVKTracker:
     """Wrapper for MVK SDK tracking."""
 
@@ -19,6 +39,7 @@ class MVKTracker:
             wrappers={"include": ["genai"]},
             agent_id=config.MVK_AGENT_ID,
             api_key=config.MVK_API_KEY,
+            batching={"max_interval_ms": 30000}
         )
 
     @staticmethod
@@ -171,6 +192,42 @@ class MVKTracker:
             value=latency_ms,
             unit="millisecond"
         )
+
+    @staticmethod
+    def track_operation_with_cost(
+        metric_name: str,
+        operation_key: str,
+        quantity: float = 1,
+        unit: str = "operation",
+        provider: str = "internal",
+        additional_metadata: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Track an operation with its associated cost from TOOL_PRICES.
+
+        Args:
+            metric_name: Metric name (e.g., "chromadb.searches")
+            operation_key: Key in TOOL_PRICES (e.g., "chromadb_search")
+            quantity: Quantity of operations
+            unit: Unit of measurement
+            provider: Service provider name
+            additional_metadata: Additional metadata to include
+        """
+        estimated_cost = TOOL_PRICES.get(operation_key, 0.0)
+
+        metadata = {
+            "estimated_cost": estimated_cost,
+            "currency": "USD",
+            "provider": provider
+        }
+
+        if additional_metadata:
+            metadata.update(additional_metadata)
+
+        metric_dict = Metric(metric_name, quantity=quantity, uom=unit).to_dict()
+        metric_dict["metadata"] = metadata
+
+        mvk.add_metered_usage([metric_dict])
 
 
 # Export singleton instance

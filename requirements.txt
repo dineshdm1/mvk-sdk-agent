@@ -1,27 +1,27 @@
 # Core framework
-chainlit==1.0.505
-langchain==0.1.0
-langchain-community==0.0.13
-langchain-openai==0.0.5
+chainlit
+langchain
+langchain-community
+langchain-openai
 
 # Vector database
-chromadb==0.4.22
-pypdf==3.17.4
+chromadb
+pypdf
 
 # LLM providers
-openai==1.10.0
+openai
 
 # Web search
-tavily-python==0.3.3
+tavily-python
 
 # MVK SDK
-mvk-sdk>=0.1.0
+mvk-sdk
 
 # Utilities
-python-dotenv==1.0.0
-pydantic==2.5.3
-tiktoken==0.5.2
+python-dotenv
+pydantic
+tiktoken
 
 # HTTP
-requests==2.31.0
-httpx==0.26.0
+requests
+httpx

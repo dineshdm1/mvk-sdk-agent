@@ -2,6 +2,7 @@
 
 from typing import Dict, Optional
 from langchain_openai import ChatOpenAI
+import mvk_sdk as mvk
 
 from ..utils.config import config
 from ..utils.mvk_tracker import tracker
@@ -19,6 +20,7 @@ class CodeGenerator:
             openai_api_key=config.OPENAI_API_KEY
         )
 
+    @mvk.signal(step_type="AGENT", operation="code_generation")
     def generate(
         self,
         user_query: str,
@@ -36,20 +38,25 @@ class CodeGenerator:
         Returns:
             Dictionary with code, explanation, cost estimate, and gotchas
         """
-        with tracker.track_agent("code_generator", "generate_code"):
-            try:
-                # Build comprehensive context
-                sdk_ctx = sdk_context or "No specific SDK context provided."
-                framework_ctx = framework_context or "No specific framework context provided."
+        try:
+            # Build comprehensive context
+            sdk_ctx = sdk_context or "No specific SDK context provided."
+            framework_ctx = framework_context or "No specific framework context provided."
 
-                # Generate code using LLM
-                with tracker.track_tool("llm_code_generation", "generate"):
+            # Stage 1: Code generation
+            with mvk.context(name="stage.generation"):
+                with mvk.create_signal(
+                    name="tool.llm_code_gen",
+                    step_type="TOOL",
+                    operation="generate"
+                ):
                     prompt = CODE_GENERATOR_PROMPT.format(
                         user_query=user_query,
                         sdk_context=sdk_ctx,
                         framework_context=framework_ctx
                     )
 
+                    # LLM call is auto-tracked by MVK SDK
                     response = self.llm.invoke([
                         {"role": "system", "content": "You are an expert code generator for MVK SDK integration."},
                         {"role": "user", "content": prompt}
@@ -57,28 +64,29 @@ class CodeGenerator:
 
                     raw_response = response.content
 
-                # Parse response
+            # Stage 2: Response parsing
+            with mvk.context(name="stage.parsing"):
                 parsed = self._parse_response(raw_response)
 
-                # Track metrics
-                tracker.track_metric("code_generator.generations", 1, "generation")
+            # Track metrics
+            tracker.track_metric("code_generator.generations", 1, "generation")
 
-                return {
-                    **parsed,
-                    "success": True
-                }
+            return {
+                **parsed,
+                "success": True
+            }
 
-            except Exception as e:
-                print(f"❌ Code Generator error: {e}")
-                tracker.track_metric("code_generator.errors", 1, "error")
+        except Exception as e:
+            print(f"❌ Code Generator error: {e}")
+            tracker.track_metric("code_generator.errors", 1, "error")
 
-                return {
-                    "code": f"# Error generating code: {str(e)}",
-                    "explanation": "",
-                    "cost_estimate": "",
-                    "gotchas": "",
-                    "success": False
-                }
+            return {
+                "code": f"# Error generating code: {str(e)}",
+                "explanation": "",
+                "cost_estimate": "",
+                "gotchas": "",
+                "success": False
+            }
 
     def _parse_response(self, response: str) -> Dict[str, str]:
         """

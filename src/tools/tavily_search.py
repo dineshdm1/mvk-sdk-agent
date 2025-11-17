@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Optional
 from tavily import TavilyClient
+import mvk_sdk as mvk
 
 from ..utils.config import config
 from ..utils.mvk_tracker import tracker
@@ -33,7 +34,11 @@ class TavilySearch:
         Returns:
             List of search results with title, url, content
         """
-        with tracker.track_tool("tavily_search", "search"):
+        with mvk.create_signal(
+            name="tool.tavily_search",
+            step_type="TOOL",
+            operation="web_search"
+        ):
             try:
                 # Build search parameters
                 search_params = {
@@ -58,15 +63,20 @@ class TavilySearch:
                         "score": item.get("score", 0.0)
                     })
 
-                # Track cost (estimated $0.001 per search)
-                tracker.track_cost(
-                    operation="tavily_search",
-                    estimated_cost=0.001,
-                    currency="USD",
-                    provider="tavily"
+                # Track Tavily search cost
+                tracker.track_operation_with_cost(
+                    metric_name="tavily.searches",
+                    operation_key="tavily_search",
+                    quantity=1,
+                    unit="search",
+                    provider="tavily",
+                    additional_metadata={
+                        "max_results": max_results,
+                        "search_depth": search_depth,
+                        "results_returned": len(results),
+                        "domains": include_domains if include_domains else "all"
+                    }
                 )
-
-                tracker.track_metric("tavily.searches", 1, "search")
 
                 return results
 
